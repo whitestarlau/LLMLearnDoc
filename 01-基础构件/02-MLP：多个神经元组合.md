@@ -1,5 +1,42 @@
 # MLP：多个神经元组合
 
+## 历史背景：从寒冬到复苏
+
+### 1969年的打击
+
+1969年，Minsky和Papert在《Perceptrons》一书中严格证明了单层感知机的致命缺陷——无法学习XOR问题。这本书直接导致了神经网络研究的**第一次寒冬**，资金和兴趣骤降。
+
+当时的计算机学者们面临一个核心问题：
+
+> **多层网络是否真的能解决单层感知机解决不了的问题？如何训练这样的网络？**
+
+### 多层网络的曙光
+
+1970年代，一些研究者开始探索多层感知机（MLP）。他们直觉上相信：**多个神经元组合起来应该能表达更复杂的函数**。但面临两个关键障碍：
+
+1. **训练问题**：如何调整多层网络的权重？（反向传播算法尚未普及）
+2. **理论问题**：多层网络是否真的比单层更强大？（缺乏严格证明）
+
+### 反向传播的复兴
+
+1986年，**David Rumelhart**、**Geoffrey Hinton** 和 **Ronald Williams** 发表了里程碑式的论文：
+
+> *"Learning representations by back-propagating errors"*
+
+他们重新发现并推广了**反向传播算法**，使得训练多层网络成为可能。这篇论文直接引发了神经网络研究的**第二次热潮**。
+
+### 万能逼近定理的证明
+
+1989年，**Kurt Hornik** 等人发表了著名论文：
+
+> *"Multilayer feedforward networks are universal approximators"*
+
+他们严格证明了**万能逼近定理**：一个包含足够多隐藏神经元的单隐层前馈网络，可以以任意精度逼近任意连续函数。
+
+这个定理为多层网络提供了坚实的理论基础，证明了MLP确实比单层感知机更强大。
+
+---
+
 ## 1. 从感知机到网络
 
 单个感知机只能画直线。但如果我们把多个感知机组合起来呢？
@@ -10,7 +47,9 @@
 
 ## 2. 万能逼近定理
 
-**定理**：一个包含足够多隐藏神经元的单隐层前馈网络，可以以任意精度逼近任意连续函数。
+**定理**（Hornik et al., 1989）：一个包含足够多隐藏神经元的单隐层前馈网络，可以以任意精度逼近任意连续函数。
+
+这个定理为多层网络提供了坚实的理论基础，证明了MLP确实比单层感知机更强大。
 
 直觉理解：
 - 每个神经元画一条线（超平面）
@@ -285,4 +324,6 @@ for epoch in range(10):
 ## 延伸阅读
 
 - Hornik et al. (1989) "Multilayer feedforward networks are universal approximators"
+- Rumelhart, Hinton & Williams (1986) "Learning representations by back-propagating errors" - 反向传播算法的里程碑论文
+- Minsky & Papert (1969) "Perceptrons" - 导致第一次AI寒冬的著作
 - 神经网络可视化工具：[TensorFlow Playground](https://playground.tensorflow.org)
