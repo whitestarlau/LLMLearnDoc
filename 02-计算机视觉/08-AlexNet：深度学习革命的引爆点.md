@@ -1,4 +1,4 @@
-# AlexNet：深度学习的起点
+# AlexNet：深度学习革命的引爆点
 
 ## 1. 历史背景：ImageNet 竞赛
 
