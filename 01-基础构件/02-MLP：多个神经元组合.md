@@ -149,6 +149,12 @@ import torch
 import torch.nn as nn
 
 class MLP(nn.Module):
+    """
+    多层感知机 (MLP) 实现
+    
+    注：这里使用了 BatchNorm 和 Dropout，它们将在第 6 章"正则化"中详细讲解。
+    现在只需知道它们有助于模型稳定训练和防止过拟合。
+    """
     def __init__(self, input_dim, hidden_dims, output_dim, activation='relu'):
         super().__init__()
         
@@ -168,9 +174,9 @@ class MLP(nn.Module):
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
+                nn.BatchNorm1d(hidden_dim),  # 批归一化（第6章详解）
                 act_fn,
-                nn.Dropout(0.1)
+                nn.Dropout(0.1)  # Dropout（第6章详解）
             ])
             prev_dim = hidden_dim
         

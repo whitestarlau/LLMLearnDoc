@@ -148,7 +148,7 @@ class LayerNorm(nn.Module):
     
     def forward(self, x):
         mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True, unbiased=False)
         return self.gamma * (x - mean) / (std + self.eps) + self.beta
 ```
 
@@ -364,12 +364,30 @@ class BERTStyleEncoder(nn.Module):
 - 对话
 
 ```python
+class GPTBlock(nn.Module):
+    """GPT 风格的解码器块（只有自注意力，无交叉注意力）"""
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+        super().__init__()
+        self.ln1 = LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, num_heads)
+        self.ln2 = LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        # Pre-Norm: 自注意力 + 残差
+        x = x + self.dropout(self.attn(self.ln1(x), x, x, mask))
+        # FFN + 残差
+        x = x + self.dropout(self.ffn(self.ln2(x)))
+        return x
+
+
 class GPTStyleDecoder(nn.Module):
     def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff):
         super().__init__()
         self.embedding = EmbeddingWithPosition(vocab_size, d_model)
         self.layers = nn.ModuleList([
-            DecoderLayer(d_model, num_heads, d_ff)  # 无交叉注意力
+            GPTBlock(d_model, num_heads, d_ff)  # 使用 GPTBlock，无交叉注意力
             for _ in range(num_layers)
         ])
         self.norm = LayerNorm(d_model)
@@ -379,7 +397,7 @@ class GPTStyleDecoder(nn.Module):
         causal_mask = create_causal_mask(x.size(1))
         x = self.embedding(x)
         for layer in self.layers:
-            x = layer(x, None, causal_mask)  # 只有自注意力
+            x = layer(x, causal_mask)  # 只传 mask，不需要 encoder_out
         return self.output_proj(self.norm(x))
 ```
 

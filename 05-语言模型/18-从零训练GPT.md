@@ -550,7 +550,7 @@ def generate_greedy(model, tokenizer, prompt, max_tokens=100):
     
     # 编码提示
     tokens = tokenizer.encode(prompt)
-    input_ids = torch.tensor([tokens], dtype=torch.long, device=model.device)
+    input_ids = torch.tensor([tokens], dtype=torch.long, device=next(model.parameters()).device)
     
     for _ in range(max_tokens):
         # 前向传播
@@ -580,7 +580,7 @@ def generate_with_temperature(model, tokenizer, prompt, max_tokens=100, temperat
     model.eval()
     
     tokens = tokenizer.encode(prompt)
-    input_ids = torch.tensor([tokens], dtype=torch.long, device=model.device)
+    input_ids = torch.tensor([tokens], dtype=torch.long, device=next(model.parameters()).device)
     
     for _ in range(max_tokens):
         # 只取最后 block_size 个 token（避免超长）
@@ -607,7 +607,7 @@ def generate_top_k(model, tokenizer, prompt, max_tokens=100, temperature=1.0, k=
     model.eval()
     
     tokens = tokenizer.encode(prompt)
-    input_ids = torch.tensor([tokens], dtype=torch.long, device=model.device)
+    input_ids = torch.tensor([tokens], dtype=torch.long, device=next(model.parameters()).device)
     
     for _ in range(max_tokens):
         if input_ids.size(1) > model.max_len:
@@ -637,7 +637,7 @@ def generate_top_p(model, tokenizer, prompt, max_tokens=100, temperature=1.0, p=
     model.eval()
     
     tokens = tokenizer.encode(prompt)
-    input_ids = torch.tensor([tokens], dtype=torch.long, device=model.device)
+    input_ids = torch.tensor([tokens], dtype=torch.long, device=next(model.parameters()).device)
     
     for _ in range(max_tokens):
         if input_ids.size(1) > model.max_len:
@@ -679,7 +679,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from dataclasses import dataclass
 import math
+import json
 from tqdm import tqdm
+import numpy as np
 
 # 配置
 @dataclass
