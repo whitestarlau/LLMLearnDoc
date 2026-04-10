@@ -1,0 +1,460 @@
+# 16-GPT：解码器架构
+
+上一章我们学习了语言模型的核心概念：预测下一个词。现在，我们来看看当前最流行的语言模型架构——**GPT**。
+
+GPT 是 **G**enerative **P**re-trained **T**ransformer 的缩写。它的核心特点是：**只使用 Transformer 的解码器部分**。
+
+这一选择看似简单，却带来了深远影响——它让 GPT 成为生成任务的首选架构，也为后来的 GPT-2、GPT-3、GPT-4 乃至 ChatGPT 奠定了基础。
+
+---
+
+## 1. 为什么只用解码器？
+
+### 1.1 编码器-解码器 vs 只用解码器
+
+回顾 Transformer 的两种用法：
+
+**编码器-解码器（Seq2Seq）**：
+- 适合：输入→输出 的转换任务
+- 示例：翻译、摘要
+- 编码器：理解完整输入
+- 解码器：自回归生成输出
+
+**只用解码器**：
+- 适合：文本延续任务
+- 示例：生成、对话、续写
+- 输入就是输出的前缀
+
+```
+编码器-解码器（翻译）：
+输入: "翻译这段话"  →  输出: "Translate this paragraph"
+
+只用解码器（续写）：
+输入: "从前有座山，"  →  输出: "山里有座庙，庙里有个老和尚..."
+```
+
+### 1.2 自回归的天然适配
+
+语言模型的核心任务是：给定前文，预测下一个词。
+
+这正是**自回归**的定义——用过去预测未来。
+
+Transformer 解码器天生就是自回归的：
+- **因果掩码**（Causal Mask）：每个位置只能看到前面的位置
+- **单向注意力**：不能"偷看"未来的词
+- **完美匹配**：语言模型的训练目标
+
+### 1.3 统一任务形式
+
+只用解码器的一大优势：**所有 NLP 任务都可以变成文本生成**。
+
+```
+翻译：
+输入: "Translate to French: Hello →"
+输出: "Bonjour"
+
+问答：
+输入: "Q: 法国首都是哪里? A: →"
+输出: "巴黎"
+
+分类：
+输入: "Review: 这部电影很棒. Sentiment: →"
+输出: "Positive"
+```
+
+不需要为不同任务设计不同的架构，一个解码器搞定所有。
+
+---
+
+## 2. GPT 架构详解
+
+### 2.1 整体结构
+
+```
+输入文本
+    ↓
+[Token Embedding + Position Embedding]
+    ↓
+┌─────────────────────────────────────┐
+│  Transformer Decoder Block × N      │
+│  ┌───────────────────────────────┐  │
+│  │ Masked Multi-Head Attention   │  │
+│  │ + Add & Norm                  │  │
+│  └───────────────────────────────┘  │
+│  ┌───────────────────────────────┐  │
+│  │ Feed Forward Network          │  │
+│  │ + Add & Norm                  │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+    ↓
+[Layer Norm]
+    ↓
+[Linear → Softmax]
+    ↓
+下一个词的概率分布
+```
+
+### 2.2 关键设计决策
+
+| 设计 | 选择 | 原因 |
+|------|------|------|
+| 架构 | Decoder-only | 自回归生成 |
+| 注意力 | 单向（因果掩码） | 不能看未来 |
+| 归一化 | Pre-Norm | 训练更稳定 |
+| 位置编码 | 可学习 | 更灵活 |
+| 权重共享 | 输入嵌入 ↔ 输出投影 | 减少参数，提升性能 |
+
+**Pre-Norm vs Post-Norm**：
+
+原始 Transformer 用 Post-Norm：
+```python
+x = x + sublayer(x)
+x = LayerNorm(x)
+```
+
+GPT 用 Pre-Norm：
+```python
+x = x + sublayer(LayerNorm(x))
+```
+
+Pre-Norm 让深层网络训练更稳定。
+
+### 2.3 代码实现
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class GPTBlock(nn.Module):
+    """GPT 的基本单元：带掩码的多头注意力 + FFN"""
+    
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # Pre-Norm：先归一化，再计算
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, num_heads)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout)
+        )
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        # 自注意力（带残差）
+        x = x + self.dropout(self.attn(self.ln1(x), mask))
+        # FFN（带残差）
+        x = x + self.dropout(self.ffn(self.ln2(x)))
+        return x
+
+
+class GPT(nn.Module):
+    """GPT 模型"""
+    
+    def __init__(self, vocab_size, d_model=768, num_heads=12, 
+                 num_layers=12, d_ff=3072, max_len=1024, dropout=0.1):
+        super().__init__()
+        
+        # 嵌入层
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(max_len, d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Transformer 块堆叠
+        self.blocks = nn.ModuleList([
+            GPTBlock(d_model, num_heads, d_ff, dropout)
+            for _ in range(num_layers)
+        ])
+        
+        # 输出层
+        self.ln_f = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, vocab_size, bias=False)
+        
+        # 权重共享：输入嵌入和输出投影共享权重
+        self.head.weight = self.token_emb.weight
+        
+        self.d_model = d_model
+        self.max_len = max_len
+    
+    def forward(self, input_ids):
+        B, T = input_ids.shape
+        assert T <= self.max_len, f"序列长度 {T} 超过最大长度 {self.max_len}"
+        
+        # Token 嵌入 + 位置嵌入
+        tok_emb = self.token_emb(input_ids)  # [B, T, d_model]
+        pos_emb = self.pos_emb(torch.arange(T, device=input_ids.device))  # [T, d_model]
+        x = self.dropout(tok_emb + pos_emb)
+        
+        # 因果掩码（下三角矩阵）
+        # 位置 i 只能看到位置 0...i
+        mask = torch.tril(torch.ones(T, T, device=input_ids.device))
+        mask = mask.view(1, 1, T, T)  # [1, 1, T, T]
+        
+        # 通过所有 Transformer 块
+        for block in self.blocks:
+            x = block(x, mask)
+        
+        # 最终归一化和投影到词表
+        x = self.ln_f(x)
+        logits = self.head(x)  # [B, T, vocab_size]
+        
+        return logits
+    
+    def generate(self, prompt_ids, max_new_tokens=100, temperature=1.0, top_k=None):
+        """自回归生成文本"""
+        self.eval()
+        
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                # 如果序列太长，只取最后 max_len 个 token
+                context = prompt_ids[:, -self.max_len:]
+                
+                # 前向传播
+                logits = self(context)
+                
+                # 取最后一个位置的 logits
+                logits = logits[:, -1, :] / temperature  # [B, vocab_size]
+                
+                # 可选：Top-k 过滤
+                if top_k is not None:
+                    v, _ = torch.topk(logits, top_k)
+                    logits[logits < v[:, [-1]]] = -float('inf')
+                
+                # 采样下一个 token
+                probs = F.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+                
+                # 拼接到序列
+                prompt_ids = torch.cat([prompt_ids, next_token], dim=1)
+        
+        return prompt_ids
+```
+
+---
+
+## 3. GPT vs BERT：两种不同的道路
+
+### 3.1 核心区别
+
+| 特性 | GPT | BERT |
+|------|-----|------|
+| **架构** | Decoder-only | Encoder-only |
+| **注意力** | 单向（因果掩码） | 双向（无掩码） |
+| **预训练任务** | 预测下一个词 | 预测被遮盖的词（MLM） |
+| **天然适合** | 生成任务 | 理解任务 |
+| **训练数据流向** | 左→右 | 双向同时 |
+
+### 3.2 注意力掩码对比
+
+**GPT 的因果掩码**（下三角）：
+```
+     1   2   3   4
+1   [1,  0,  0,  0]  ← 位置1只能看自己
+2   [1,  1,  0,  0]  ← 位置2能看1,2
+3   [1,  1,  1,  0]  ← 位置3能看1,2,3
+4   [1,  1,  1,  1]  ← 位置4能看所有
+```
+
+**BERT 的双向注意力**（全1）：
+```
+     1   2   3   4
+1   [1,  1,  1,  1]  ← 每个位置都能看到所有
+2   [1,  1,  1,  1]
+3   [1,  1,  1,  1]
+4   [1,  1,  1,  1]
+```
+
+### 3.3 预训练任务对比
+
+**GPT：Next Token Prediction**
+
+```
+输入:  [今天, 天气, 很, 好]
+目标:  [天气, 很,  好,  ?]
+      ↑ 每个位置预测下一个词
+
+位置0: 看到[今天], 预测天气
+位置1: 看到[今天,天气], 预测很
+位置2: 看到[今天,天气,很], 预测好
+位置3: 看到[今天,天气,很,好], 预测下一个（可能是标点）
+```
+
+**BERT：Masked Language Model**
+
+```
+输入:  [今天, [MASK], 很, 好]
+目标:  天气
+
+或
+
+输入:  [今天, 天气, [MASK], [MASK]]
+目标:  很, 好
+```
+
+BERT 随机遮盖15%的词，让模型预测被遮盖的内容。
+
+### 3.4 为什么 GPT 适合生成？
+
+**关键：因果性**
+
+生成文本时，我们只能看到已生成的内容，不能偷看未来的内容。GPT 的因果掩码天然满足这个约束。
+
+BERT 的双向注意力在生成时会"作弊"——它能看到未来的词，这在推理时是不可能的。
+
+### 3.5 两种范式的对比
+
+| 场景 | GPT | BERT |
+|------|-----|------|
+| 写文章 | ✅ 擅长 | ❌ 不擅长 |
+| 对话 | ✅ 擅长 | ❌ 不擅长 |
+| 文本分类 | ⚠️ 可以，但需微调 | ✅ 擅长 |
+| 情感分析 | ⚠️ 可以 | ✅ 擅长 |
+| 命名实体识别 | ⚠️ 可以 | ✅ 擅长 |
+| 文本相似度 | ⚠️ 可以 | ✅ 擅长 |
+
+**结论**：
+- GPT："写"的能力强
+- BERT："读"的能力强
+
+---
+
+## 4. 不同规模的 GPT
+
+### 4.1 GPT-1（2018）
+
+| 参数 | 值 |
+|------|-----|
+| 层数 | 12 |
+| d_model | 768 |
+| 注意力头 | 12 |
+| 参数量 | 117M |
+| 训练数据 | BookCorpus（5GB） |
+
+特点：验证了预训练+微调范式的有效性。
+
+### 4.2 GPT-2（2019）
+
+| 版本 | 参数量 | 层数 | d_model |
+|------|--------|------|---------|
+| Small | 117M | 12 | 768 |
+| Medium | 345M | 24 | 1024 |
+| Large | 762M | 36 | 1280 |
+| XL | 1.5B | 48 | 1600 |
+
+特点：展示了零样本学习的能力。
+
+### 4.3 GPT-3（2020）
+
+| 参数 | 值 |
+|------|-----|
+| 层数 | 96 |
+| d_model | 12288 |
+| 注意力头 | 96 |
+| 参数量 | 175B |
+| 训练数据 | 300B tokens |
+
+特点：展示了少样本学习（In-Context Learning）的能力。
+
+### 4.4 规模变化趋势
+
+```
+GPT-1 (2018)  →  GPT-2 (2019)  →  GPT-3 (2020)
+  117M             1.5B              175B
+   ↓                 ↓                 ↓
+ BookCorpus       WebText           互联网数据
+```
+
+**规律**：每代参数量增长约100倍。
+
+---
+
+## 5. GPT 的局限
+
+### 5.1 上下文长度限制
+
+- GPT-3: 2048 tokens
+- GPT-4: 8K/32K/128K tokens
+
+无法处理超长文档。
+
+### 5.2 单向注意力的局限
+
+只能看到前文，不能看到后文，这对某些理解任务不利：
+
+```
+句子: "虽然他很累，但是他完成了工作。"
+
+GPT 理解"累"时，看不到"完成工作"
+BERT 可以看到整句话
+```
+
+### 5.3 训练和推理的成本
+
+- 参数量巨大（175B+）
+- 推理时需要逐个生成 token
+- 长文本生成很慢
+
+### 5.4 幻觉问题
+
+会生成看似合理但实际错误的内容：
+
+```
+Q: 谁发明了电话？
+A: 爱迪生在1876年发明了电话。（错误，应该是贝尔）
+```
+
+---
+
+## 6. 小结
+
+```
+GPT = Decoder-only Transformer
+
+核心特点：
+- 单向注意力（因果掩码）
+- 自回归生成
+- 预训练+微调（GPT-1）
+- 零样本/少样本学习（GPT-2/3）
+
+与 BERT 的对比：
+- GPT: 生成能力强（写）
+- BERT: 理解能力强（读）
+
+演进：
+GPT-1 (117M) → GPT-2 (1.5B) → GPT-3 (175B)
+
+局限：
+- 上下文长度
+- 单向注意力
+- 幻觉问题
+```
+
+---
+
+## 7. 延伸阅读
+
+### 论文
+
+| 论文 | 年份 | 贡献 |
+|------|------|------|
+| "Improving Language Understanding by Generative Pre-Training" | 2018 | GPT-1，预训练+微调 |
+| "Language Models are Unsupervised Multitask Learners" | 2019 | GPT-2，零样本学习 |
+| "Language Models are Few-Shot Learners" | 2020 | GPT-3，少样本学习 |
+
+### 代码实现
+
+- [minGPT](https://github.com/karpathy/minGPT) - Andrej Karpathy 的简洁实现
+- [nanoGPT](https://github.com/karpathy/nanoGPT) - 更快的训练实现
+- [Hugging Face Transformers](https://github.com/huggingface/transformers) - 工业级实现
+
+### 可视化资源
+
+- [The Illustrated GPT-2](http://jalammar.github.io/illustrated-gpt2/) - Jay Alammar 的图解
+
+---
+
+- **上一章**：[15-语言模型](15-语言模型.md)
+- **下一章**：[17-预训练时代：GPT-1与微调范式](17-预训练时代：GPT-1与微调范式.md)

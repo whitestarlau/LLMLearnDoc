@@ -1,14 +1,14 @@
-# 19-BERT：双向理解的力量
+# 21-BERT：双向理解的力量
 
-## 一句话理解
+我们已经深入学习了 GPT 系列——从架构到训练范式，再到涌现能力。现在，让我们看看另一条同样重要的技术路线：**BERT**。
 
-**BERT 用双向注意力同时看到左右上下文，通过遮盖和预测学会理解语言。**
+2018年，就在 GPT-1 发布的几个月后，Google 推出了 BERT。它采用了与 GPT 截然不同的策略：**双向注意力 + 编码器架构**。这一选择让 BERT 在理解任务上大放异彩，成为当时 NLP 领域的新标杆。
+
+如果说 GPT 擅长"写作"，那 BERT 则擅长"阅读"。理解这两种范式的差异，对于把握现代 NLP 的全貌至关重要。
 
 ---
 
-## 1. 直觉解释
-
-### BERT 是什么？
+## 1. BERT 是什么？
 
 **B**idirectional **E**ncoder **R**epresentations from **T**ransformers
 
@@ -868,5 +868,5 @@ BERT 变体：
 - **论文**：[RoBERTa: A Robustly Optimized BERT](https://arxiv.org/abs/1907.11692)
 - **代码**：[Hugging Face Transformers](https://github.com/huggingface/transformers)
 - **博客**：[The Illustrated BERT](https://jalammar.github.io/illustrated-bert/)
-- **上一章**：[18-从零训练GPT](18-从零训练GPT.md)
+- **上一章**：[20-从零训练GPT](20-从零训练GPT.md)
 - **下一章**：[20-采样策略与生成质量](../06-进阶专题/20-采样策略与生成质量.md)
