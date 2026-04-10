@@ -1195,5 +1195,5 @@ RLHF = 让语言模型学会"人类想要什么"
   - [Chip Huyen的RLHF介绍](https://huyenchip.com/2023/05/02/rlhf.html)
   - [LLaMA2论文解读](https://ai.meta.com/llama/)
 
-- **上一章**：[23-LoRA：参数高效微调](23-LoRA：参数高效微调.md)
-- **下一章**：[25-Diffusion：从噪声中创造](25-Diffusion：从噪声中创造.md)
+- **上一章**：[25-LoRA：参数高效微调](25-LoRA：参数高效微调.md)
+- **下一章**：[27-Diffusion：从噪声中创造](27-Diffusion：从噪声中创造.md)

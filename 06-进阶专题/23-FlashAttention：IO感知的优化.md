@@ -749,5 +749,5 @@ FlashAttention = 分块 + 在线 Softmax + 减少 HBM 访问
   - [Tri Dao's Blog on FlashAttention](https://princeton-nlp.github.io/flash-attention/)
   - [The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)（注意力基础）
 
-- **上一章**：[20-采样策略与生成质量](20-采样策略与生成质量.md)
-- **下一章**：[22-缩放定律与计算最优](22-缩放定律与计算最优.md)
+- **上一章**：[22-采样策略与生成质量](22-采样策略与生成质量.md)
+- **下一章**：[24-缩放定律与计算最优](24-缩放定律与计算最优.md)

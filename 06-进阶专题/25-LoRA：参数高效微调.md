@@ -1005,5 +1005,5 @@ LoRA = 低秩矩阵近似权重更新
   - [Philschmid blog on LoRA](https://www.philschmid.de/fine-tune-flan-t5-peft)
   - [Sebastian Raschka 的 LoRA 解析](https://magazine.sebastianraschka.com/p/lora-and-dora)
 
-- **上一章**：[22-缩放定律与计算最优](22-缩放定律与计算最优.md)
-- **下一章**：[24-RLHF：从GPT到ChatGPT](24-RLHF：从GPT到ChatGPT.md)
+- **上一章**：[24-缩放定律与计算最优](24-缩放定律与计算最优.md)
+- **下一章**：[26-RLHF：从GPT到ChatGPT](26-RLHF：从GPT到ChatGPT.md)
