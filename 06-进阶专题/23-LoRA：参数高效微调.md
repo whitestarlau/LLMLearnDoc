@@ -1,0 +1,1009 @@
+# 23-LoRA：参数高效微调
+
+## 一句话理解
+
+**LoRA 通过在原始权重旁路添加低秩矩阵进行微调，只训练少量参数就能达到全量微调的效果，让消费级 GPU 也能微调大模型。**
+
+---
+
+## 1. 直觉解释
+
+### 1.1 全量微调的困境
+
+假设你有一个 70B 参数的 Llama-2 模型，想在自己的数据集上微调：
+
+```
+全量微调的成本：
+- 模型参数：70B × 2 bytes (FP16) = 140 GB
+- 梯度：70B × 2 bytes = 140 GB
+- 优化器状态 (Adam)：70B × 2 × 4 bytes = 560 GB
+- 激活值：~100 GB (取决于 batch size)
+- 总计：~940 GB 显存！
+
+需要：15-20 张 A100 (80GB) 才能训练
+```
+
+**现实问题**：
+- 大多数团队没有这种算力
+- 存储每个任务的完整模型副本成本高昂
+- 部署多个微调模型需要巨大存储空间
+
+### 1.2 核心洞察：权重更新的低秩结构
+
+微软研究院的关键发现：
+
+> **预训练模型的权重矩阵是满秩的，但微调时的权重更新（ΔW）具有很低的"本征秩"。**
+
+**类比**：
+
+想象你要调整一架复杂的机器：
+- **全量微调**：重新设计每个零件（改动 100% 的参数）
+- **LoRA**：在关键位置添加几个调节旋钮（只改动 <1% 的参数）
+
+实验证明，这些"调节旋钮"（低秩矩阵）就足以让模型适应新任务。
+
+### 1.3 LoRA 的核心思想
+
+```
+原始权重：W₀ ∈ R^(d×k)
+微调后的权重：W = W₀ + ΔW
+
+传统方法：直接训练 W，需要更新 d×k 个参数
+LoRA：ΔW = A × B，其中 A ∈ R^(d×r), B ∈ R^(r×k), r << min(d,k)
+
+只需要训练 r×(d+k) 个参数！
+```
+
+当 r=8，d=4096 时：
+- 原始参数：4096 × 4096 = 16,777,216
+- LoRA 参数：8 × (4096 + 4096) = 65,536
+- **参数减少 256 倍！**
+
+---
+
+## 2. 数学原理
+
+### 2.1 低秩分解
+
+矩阵的秩（Rank）是矩阵中线性无关的行（或列）的最大数量。
+
+```
+满秩矩阵：rank(W) = min(d, k)
+低秩矩阵：rank(W) << min(d, k)
+
+任何矩阵都可以分解为：
+W = U × Σ × V^T  (SVD分解)
+
+如果只保留前 r 个奇异值：
+W ≈ U_r × Σ_r × V_r^T = A × B
+其中 A = U_r × Σ_r^(1/2), B = Σ_r^(1/2) × V_r^T
+```
+
+**关键洞察**：微调时的权重更新 ΔW 可以用低秩矩阵很好地近似。
+
+### 2.2 LoRA 的完整公式
+
+对于一层的前向传播：
+
+```
+传统：h = W₀ × x + b₀
+LoRA：h = W₀ × x + ΔW × x + b₀
+        = W₀ × x + (A × B) × x + b₀
+        = W₀ × x + A × (B × x) + b₀
+
+其中：
+- W₀ ∈ R^(d×k)：预训练权重（冻结）
+- A ∈ R^(d×r)：可训练的低秩矩阵（高斯初始化）
+- B ∈ R^(r×k)：可训练的低秩矩阵（零初始化）
+- r：LoRA 秩（通常 4-64）
+- α：缩放因子（通常 α = 2r）
+```
+
+**缩放因子**：
+
+```
+h = W₀ × x + (α/r) × A × B × x
+
+α 的作用：
+- 调整 LoRA 更新的幅度
+- 当改变 r 时，保持学习率不变
+- 经验法则：α = 2r
+```
+
+### 2.3 应用位置
+
+LoRA 通常应用于 Transformer 的以下权重矩阵：
+
+```
+Transformer 层中的注意力权重：
+- W_q (Query)：用于提取查询向量
+- W_k (Key)：用于提取键向量  
+- W_v (Value)：用于提取值向量
+- W_o (Output)：注意力输出投影
+
+以及 FFN 层的权重：
+- W_up, W_down, W_gate (某些架构)
+```
+
+**推荐配置**：
+- **只训 Q 和 V**：参数更少，效果已经不错
+- **训 Q、K、V、O**：效果更好，参数稍多
+- **所有线性层**：最佳效果，但参数最多
+
+### 2.4 与其他方法的对比
+
+| 方法 | 参数更新 | 训练参数比例 | 存储需求 | 推理开销 |
+|------|---------|-------------|---------|---------|
+| **Full Fine-tuning** | 所有参数 | 100% | 完整模型副本 | 无 |
+| **LoRA** | 低秩矩阵 | 0.1%-1% | LoRA 权重 (~MB) | 可合并 |
+| **Prefix Tuning** | 前缀嵌入 | 0.1% | 前缀参数 | 额外计算 |
+| **Adapter** | 瓶颈层 | 0.5%-5% | Adapter 权重 | 额外计算 |
+| **Prompt Tuning** | 软提示 | <0.01% | 提示嵌入 | 额外计算 |
+
+**LoRA 的优势**：
+- 参数量小（可存储在邮件附件中）
+- 不增加推理延迟（可合并权重）
+- 与全量微调效果相当
+
+---
+
+## 3. 代码实现
+
+### 3.1 基础 LoRA 层
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class LoRALayer(nn.Module):
+    """
+    LoRA 层的基础实现
+    
+    Args:
+        in_features: 输入维度
+        out_features: 输出维度
+        r: LoRA 秩
+        lora_alpha: 缩放因子
+        lora_dropout: Dropout 概率
+    """
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.0,
+    ):
+        super().__init__()
+        
+        self.r = r
+        self.lora_alpha = lora_alpha
+        self.scaling = lora_alpha / r
+        
+        # 冻结的预训练权重（由外部提供）
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        # 可训练的 LoRA 参数
+        if r > 0:
+            self.lora_A = nn.Parameter(torch.zeros((r, in_features)))
+            self.lora_B = nn.Parameter(torch.zeros((out_features, r)))
+            self.lora_dropout = nn.Dropout(p=lora_dropout)
+            
+            # 初始化：A 用高斯，B 用零
+            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B)
+    
+    def forward(self, x: torch.Tensor, base_output: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: 输入 [batch, seq_len, in_features]
+            base_output: 基础模型输出 [batch, seq_len, out_features]
+        
+        Returns:
+            叠加 LoRA 后的输出
+        """
+        if self.r == 0:
+            return base_output
+        
+        # LoRA 路径：x → dropout → A → B → scaling
+        # (B @ A @ x^T)^T = x @ A^T @ B^T
+        lora_output = self.lora_dropout(x) @ self.lora_A.T @ self.lora_B.T
+        
+        return base_output + lora_output * self.scaling
+
+
+class LinearWithLoRA(nn.Module):
+    """
+    包装线性层，添加 LoRA 功能
+    """
+    def __init__(
+        self,
+        base_layer: nn.Linear,
+        r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.0,
+    ):
+        super().__init__()
+        
+        # 冻结原始权重
+        self.base_layer = base_layer
+        for param in self.base_layer.parameters():
+            param.requires_grad = False
+        
+        # 添加 LoRA
+        self.lora = LoRALayer(
+            in_features=base_layer.in_features,
+            out_features=base_layer.out_features,
+            r=r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 基础输出
+        base_output = self.base_layer(x)
+        
+        # 添加 LoRA
+        return self.lora(x, base_output)
+    
+    def merge_weights(self) -> nn.Linear:
+        """
+        将 LoRA 权重合并到基础权重，用于推理加速
+        
+        Returns:
+            新的线性层，权重已合并
+        """
+        # 计算合并后的权重
+        merged_weight = (
+            self.base_layer.weight.data + 
+            self.lora.lora_B @ self.lora_A * self.lora.scaling
+        )
+        
+        # 创建新的线性层
+        merged_layer = nn.Linear(
+            self.base_layer.in_features,
+            self.base_layer.out_features,
+            bias=self.base_layer.bias is not None,
+        )
+        merged_layer.weight.data = merged_weight
+        if self.base_layer.bias is not None:
+            merged_layer.bias.data = self.base_layer.bias.data
+        
+        return merged_layer
+```
+
+### 3.2 为 Transformer 添加 LoRA
+
+```python
+def inject_lora_to_model(
+    model,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    r=8,
+    lora_alpha=16,
+    lora_dropout=0.0,
+):
+    """
+    为模型中的指定模块注入 LoRA
+    
+    Args:
+        model: 原始模型
+        target_modules: 要添加 LoRA 的模块名称列表
+        r: LoRA 秩
+        lora_alpha: 缩放因子
+        lora_dropout: Dropout 概率
+    
+    Returns:
+        添加 LoRA 后的模型
+    """
+    lora_layers = {}
+    
+    def replace_module(parent_module, child_name, child_module):
+        if isinstance(child_module, nn.Linear):
+            # 检查模块名是否在目标列表中
+            full_name = f"{parent_module.__class__.__name__}.{child_name}"
+            
+            # 简单匹配：检查 target_modules 中的任何一项是否在 child_name 中
+            if any(target in child_name for target in target_modules):
+                lora_layer = LinearWithLoRA(
+                    child_module,
+                    r=r,
+                    lora_alpha=lora_alpha,
+                    lora_dropout=lora_dropout,
+                )
+                setattr(parent_module, child_name, lora_layer)
+                lora_layers[full_name] = lora_layer
+                print(f"Added LoRA to: {full_name}")
+    
+    # 递归遍历模型
+    def traverse(module, prefix=""):
+        for name, child in module.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+            
+            if len(list(child.children())) == 0:
+                # 叶子节点
+                replace_module(module, name, child)
+            else:
+                # 递归遍历
+                traverse(child, full_name)
+    
+    traverse(model)
+    
+    print(f"\nTotal LoRA layers added: {len(lora_layers)}")
+    
+    return model, lora_layers
+
+
+# 使用示例
+# from transformers import AutoModelForCausalLM
+# model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b")
+# model, lora_layers = inject_lora_to_model(model, r=16, lora_alpha=32)
+```
+
+### 3.3 完整训练流程
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+from peft import LoraConfig, get_peft_model, TaskType
+import torch
+
+def setup_lora_training(
+    model_name="meta-llama/Llama-2-7b",
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.05,
+    target_modules=["q_proj", "v_proj"],
+):
+    """
+    设置 LoRA 训练
+    """
+    # 加载基础模型
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    
+    # 配置 LoRA
+    lora_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+        bias="none",
+        # 可选：配置推理时的行为
+        inference_mode=False,
+    )
+    
+    # 应用 LoRA
+    model = get_peft_model(model, lora_config)
+    
+    # 打印可训练参数信息
+    model.print_trainable_parameters()
+    # 输出示例：trainable params: 33,554,432 || all params: 6,771,970,048 || 
+    #          trainable%: 0.4956
+    
+    return model
+
+
+def train_with_lora(
+    model,
+    train_dataset,
+    eval_dataset=None,
+    output_dir="./lora_output",
+    num_epochs=3,
+    batch_size=4,
+    learning_rate=2e-4,
+):
+    """
+    使用 LoRA 训练模型
+    """
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=4,
+        warmup_steps=100,
+        learning_rate=learning_rate,
+        fp16=True,
+        logging_steps=10,
+        evaluation_strategy="steps" if eval_dataset else "no",
+        eval_steps=500,
+        save_strategy="steps",
+        save_steps=500,
+        save_total_limit=3,
+        load_best_model_at_end=True if eval_dataset else False,
+    )
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+    )
+    
+    # 训练
+    trainer.train()
+    
+    # 保存 LoRA 权重
+    model.save_pretrained(output_dir)
+    # 只保存 LoRA 权重 (~几十 MB)，不保存完整模型
+    
+    return model
+
+
+# 推理：加载基础模型 + LoRA 权重
+def load_lora_for_inference(base_model_name, lora_weights_path):
+    """
+    加载基础模型并应用 LoRA 权重
+    """
+    from peft import PeftModel
+    
+    # 加载基础模型
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    
+    # 加载 LoRA 权重
+    model = PeftModel.from_pretrained(base_model, lora_weights_path)
+    
+    # 可选：合并权重以获得更快推理
+    # model = model.merge_and_unload()
+    
+    return model
+```
+
+### 3.4 参数计算工具
+
+```python
+def calculate_lora_parameters(
+    model_params=7e9,  # 7B 模型
+    hidden_size=4096,
+    num_layers=32,
+    num_attention_heads=32,
+    r=16,
+    target_modules=["q_proj", "v_proj"],
+):
+    """
+    计算 LoRA 引入的参数量
+    """
+    # 每个 Transformer 层的参数量
+    head_dim = hidden_size // num_attention_heads
+    
+    params_per_layer = {}
+    
+    # Q, K, V, O 投影的维度都是 (hidden_size, hidden_size)
+    for module in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+        if module in target_modules:
+            # LoRA 参数：r * hidden_size + hidden_size * r = 2 * r * hidden_size
+            params_per_layer[module] = 2 * r * hidden_size
+        else:
+            params_per_layer[module] = 0
+    
+    # 总 LoRA 参数
+    lora_params_per_layer = sum(params_per_layer.values())
+    total_lora_params = lora_params_per_layer * num_layers
+    
+    # 比例
+    ratio = total_lora_params / model_params * 100
+    
+    print(f"LoRA 参数计算 (r={r})")
+    print("=" * 50)
+    print(f"每层 LoRA 参数:")
+    for module, params in params_per_layer.items():
+        status = "✓" if params > 0 else "✗"
+        print(f"  {status} {module}: {params:,}")
+    
+    print(f"\n每层总计: {lora_params_per_layer:,}")
+    print(f"全部 {num_layers} 层: {total_lora_params:,}")
+    print(f"相比原模型 ({model_params/1e9:.1f}B): {ratio:.4f}%")
+    
+    # 存储需求
+    fp16_size_mb = total_lora_params * 2 / 1024 / 1024
+    fp32_size_mb = total_lora_params * 4 / 1024 / 1024
+    
+    print(f"\n存储需求:")
+    print(f"  FP16: {fp16_size_mb:.2f} MB")
+    print(f"  FP32: {fp32_size_mb:.2f} MB")
+    
+    return total_lora_params
+
+# 计算不同配置的参数量
+# calculate_lora_parameters(r=8, target_modules=["q_proj", "v_proj"])
+# calculate_lora_parameters(r=16, target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
+```
+
+---
+
+## 4. 进阶技术
+
+### 4.1 QLoRA：量化 + LoRA
+
+```python
+# QLoRA：使用 4-bit 量化进一步降低显存
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+def setup_qlora_training(
+    model_name="meta-llama/Llama-2-13b",
+    r=64,
+    lora_alpha=16,
+):
+    """
+    设置 QLoRA 训练（4-bit 量化 + LoRA）
+    
+    可以在单张 24GB 显卡上训练 13B 甚至 33B 模型
+    """
+    # 4-bit 量化配置
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,  # 嵌套量化
+        bnb_4bit_quant_type="nf4",       # 4-bit Normal Float
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    
+    # 加载量化模型
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    
+    # 为量化模型准备梯度检查点
+    model.gradient_checkpointing_enable()
+    model = prepare_model_for_kbit_training(model)
+    
+    # LoRA 配置
+    lora_config = LoraConfig(
+        r=r,
+        lora_alpha=lora_alpha,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", 
+                       "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    
+    model = get_peft_model(model, lora_config)
+    
+    return model
+
+"""
+显存对比（13B 模型）：
+- 全量微调 FP16：~30 GB
+- LoRA FP16：~20 GB
+- QLoRA 4-bit：~10 GB
+"""
+```
+
+### 4.2 DoRA：权重分解低秩适应
+
+```python
+"""
+DoRA (Weight-Decomposed Low-Rank Adaptation)
+
+将权重分解为幅度（magnitude）和方向（direction）分别调整：
+- 幅度：向量长度（标量）
+- 方向：单位向量（用 LoRA 调整）
+
+优点：
+- 更好的微调稳定性
+- 与全量微调的差距更小
+"""
+
+class DoRALayer(nn.Module):
+    """
+    DoRA 层实现
+    """
+    def __init__(self, base_layer: nn.Linear, r=8, lora_alpha=16):
+        super().__init__()
+        
+        self.base_layer = base_layer
+        for param in self.base_layer.parameters():
+            param.requires_grad = False
+        
+        # 计算原始权重的幅度
+        with torch.no_grad():
+            self.magnitude = nn.Parameter(
+                base_layer.weight.norm(dim=1, keepdim=True)
+            )
+        
+        # 方向的 LoRA 调整
+        self.lora_A = nn.Parameter(torch.zeros((r, base_layer.in_features)))
+        self.lora_B = nn.Parameter(torch.zeros((base_layer.out_features, r)))
+        self.scaling = lora_alpha / r
+        
+        nn.init.kaiming_uniform_(self.lora_A)
+        nn.init.zeros_(self.lora_B)
+    
+    def forward(self, x):
+        # 基础输出
+        base_out = self.base_layer(x)
+        
+        # 计算调整后的方向
+        adapted = self.base_layer.weight + self.scaling * self.lora_B @ self.lora_A
+        
+        # 归一化得到方向，乘以幅度
+        direction = adapted / adapted.norm(dim=1, keepdim=True)
+        new_weight = direction * self.magnitude
+        
+        # 应用调整后的权重
+        dora_out = F.linear(x, new_weight, self.base_layer.bias)
+        
+        # 残差连接
+        return base_out + (dora_out - base_out)
+```
+
+### 4.3 多 LoRA 适配器切换
+
+```python
+# 同时训练多个 LoRA 适配器，按需切换
+from peft import PeftModel
+
+class MultiLoRAManager:
+    """
+    管理多个 LoRA 适配器
+    
+    场景：一个基础模型 + 多个任务适配器
+    - 情感分析适配器
+    - 代码生成适配器
+    - 翻译适配器
+    """
+    def __init__(self, base_model):
+        self.base_model = base_model
+        self.adapters = {}
+        self.active_adapter = None
+    
+    def add_adapter(self, name, lora_path):
+        """加载 LoRA 适配器"""
+        self.adapters[name] = lora_path
+    
+    def switch_adapter(self, name):
+        """切换到指定适配器"""
+        if name not in self.adapters:
+            raise ValueError(f"Adapter {name} not found")
+        
+        # 加载新的 LoRA 权重
+        model = PeftModel.from_pretrained(
+            self.base_model,
+            self.adapters[name],
+            adapter_name=name,
+        )
+        
+        self.active_adapter = name
+        return model
+    
+    def merge_all_adapters(self, weights=None):
+        """
+        合并多个适配器（加权平均）
+        
+        例如：情感分析 0.6 + 通用对话 0.4
+        """
+        # peft 库提供了内置的多适配器支持
+        pass
+
+# 使用示例
+# manager = MultiLoRAManager(base_model)
+# manager.add_adapter("sentiment", "./lora_sentiment")
+# manager.add_adapter("coding", "./lora_coding")
+# 
+# # 切换适配器
+# model = manager.switch_adapter("sentiment")
+# output = model.generate(...)
+```
+
+---
+
+## 5. 实践指南
+
+### 5.1 超参数选择
+
+```python
+# LoRA 超参数调优指南
+lora_config_guide = {
+    "秩 r": {
+        "推荐值": "8, 16, 32, 64",
+        "小任务/快速实验": 8,
+        "标准任务": 16,
+        "复杂任务/大模型": 32-64,
+        "注意": "r 越大表达能力越强，但容易过拟合",
+    },
+    "缩放因子 alpha": {
+        "推荐值": "通常 2r",
+        "alpha = r": "LoRA 更新幅度较小，更保守",
+        "alpha = 2r": "平衡选择（推荐）",
+        "alpha = 4r": "更激进的更新",
+    },
+    "Dropout": {
+        "推荐值": "0.0 - 0.1",
+        "小数据集": "0.05 - 0.1（防止过拟合）",
+        "大数据集": "0.0 - 0.05",
+    },
+    "目标模块": {
+        "最小配置": ["q_proj", "v_proj"],
+        "标准配置": ["q_proj", "k_proj", "v_proj", "o_proj"],
+        "最大配置": ["q_proj", "k_proj", "v_proj", "o_proj", 
+                    "gate_proj", "up_proj", "down_proj"],
+    },
+    "学习率": {
+        "LoRA": "1e-4 - 5e-4（比全量微调高）",
+        "QLoRA": "1e-4 - 2e-4",
+        "Warmup": "总步数的 1-3%",
+    },
+}
+```
+
+### 5.2 训练技巧
+
+```python
+def lora_training_tips():
+    """
+    LoRA 训练的实用技巧
+    """
+    tips = """
+    1. 梯度检查点
+       - 必开：节省 30-40% 显存
+       - 代价：训练速度降低约 20%
+    
+    2. 混合精度训练
+       - 使用 FP16 或 BF16
+       - 显存节省 50%，速度提升
+    
+    3. 梯度累积
+       - 模拟大 batch size
+       - 配合 batch_size=1 用于超大模型
+    
+    4. 序列长度
+       - 从短序列开始（512-1024）
+       - 逐步增加到目标长度
+    
+    5. 学习率调度
+       - Warmup + Cosine Decay
+       - 或 Warmup + Linear Decay
+    
+    6. 早停（Early Stopping）
+       - 监控验证集损失
+       - LoRA 容易过拟合，早停很重要
+    
+    7. 数据质量
+       - LoRA 对数据质量更敏感
+       - 少量高质量数据 > 大量低质量数据
+    """
+    print(tips)
+```
+
+### 5.3 不同任务的配置建议
+
+```python
+task_configs = {
+    "文本分类": {
+        "r": 8,
+        "target_modules": ["q_proj", "v_proj"],
+        "epochs": 3-5,
+        "learning_rate": 2e-4,
+        "note": "分类任务相对简单，小 r 即可",
+    },
+    "指令微调": {
+        "r": 16,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+        "epochs": 3,
+        "learning_rate": 1e-4,
+        "note": "需要更大的 r 来适应新行为",
+    },
+    "领域适应": {
+        "r": 32,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+                          "gate_proj", "up_proj", "down_proj"],
+        "epochs": 1-2,
+        "learning_rate": 5e-5,
+        "note": "医学、法律等领域需要更大容量",
+    },
+    "代码生成": {
+        "r": 16-32,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+        "epochs": 1-3,
+        "learning_rate": 1e-4,
+        "note": "需要保留原始知识同时学习代码模式",
+    },
+}
+```
+
+---
+
+## 6. 常见陷阱与 FAQ
+
+### Q1: LoRA 效果不如全量微调怎么办？
+
+**排查清单**：
+```python
+checklist = {
+    "秩 r 太小": "尝试增加到 32 或 64",
+    "目标模块太少": "从只训 Q,V 扩展到 Q,K,V,O",
+    "训练不充分": "增加 epochs 或学习率",
+    "数据质量问题": "检查数据格式和标签",
+    "alpha 设置不当": "确保 alpha/r 比例合适",
+    "过拟合": "增加 dropout 或使用早停",
+}
+```
+
+**进阶方案**：
+- 尝试 DoRA（权重分解）
+- 使用 AdaLoRA（自适应秩）
+- 考虑全参数微调前几层
+
+### Q2: 如何选择 r 的大小？
+
+**经验法则**：
+```
+r 的选择取决于任务复杂度：
+
+简单任务（分类、简单生成）：r = 8-16
+中等任务（对话、摘要）：r = 16-32
+复杂任务（推理、代码）：r = 32-64
+
+搜索策略：
+1. 从 r=16 开始
+2. 如果欠拟合，增加到 32
+3. 如果过拟合，减少到 8 或增加正则化
+4. 也可以尝试 AdaLoRA 自动调整
+```
+
+### Q3: LoRA 权重可以合并吗？如何推理？
+
+```python
+# 方式 1：动态加载（灵活但稍慢）
+from peft import PeftModel
+
+base_model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b")
+model = PeftModel.from_pretrained(base_model, "./lora_weights")
+# 推理时自动应用 LoRA
+
+# 方式 2：合并权重（更快但失去灵活性）
+model = model.merge_and_unload()
+# 现在 model 是完整的模型，没有 LoRA 开销
+# 保存为完整模型
+model.save_pretrained("./merged_model")
+
+# 方式 3：多个 LoRA 切换（需要 peft >= 0.4.0）
+model.load_adapter("./lora_task1", adapter_name="task1")
+model.load_adapter("./lora_task2", adapter_name="task2")
+model.set_adapter("task1")  # 切换到 task1
+```
+
+### Q4: QLoRA 精度损失大吗？
+
+```
+4-bit 量化的影响：
+- 正常 NF4 量化：<1% 性能下降（通常感觉不到）
+- 双量化进一步节省显存，影响很小
+- 关键：使用 bfloat16 进行计算
+
+何时避免 QLoRA：
+- 对数值精度极敏感的任务
+- 模型本身很小（<7B）
+- 有足够的显存使用标准 LoRA
+```
+
+### Q5: 如何评估 LoRA 训练效果？
+
+```python
+def evaluate_lora_model(base_model, lora_model, test_dataset):
+    """
+    对比评估基座模型和 LoRA 微调模型
+    """
+    from transformers import pipeline
+    
+    # 创建生成 pipeline
+    base_generator = pipeline("text-generation", model=base_model)
+    lora_generator = pipeline("text-generation", model=lora_model)
+    
+    results = {
+        "base_model": [],
+        "lora_model": [],
+    }
+    
+    for sample in test_dataset:
+        prompt = sample["prompt"]
+        
+        base_output = base_generator(prompt, max_length=100)[0]["generated_text"]
+        lora_output = lora_generator(prompt, max_length=100)[0]["generated_text"]
+        
+        results["base_model"].append(base_output)
+        results["lora_model"].append(lora_output)
+    
+    return results
+
+# 关键指标：
+# 1. 任务特定指标（准确率、BLEU、ROUGE 等）
+# 2. 与全量微调的差距
+# 3. 是否保留了基座模型的通用能力（灾难性遗忘检查）
+```
+
+### Q6: LoRA 与 Prompt Tuning 怎么选？
+
+| 场景 | 推荐方法 | 原因 |
+|------|---------|------|
+| 参数极度受限（<1MB） | Prompt Tuning | 参数量最小 |
+| 单卡微调 7B-13B | LoRA/QLoRA | 平衡效果和效率 |
+| 单卡微调 33B+ | QLoRA | 唯一可行方案 |
+| 多任务部署 | LoRA | 适配器体积小，易切换 |
+| 需要理解新领域 | LoRA | 比软提示表达能力更强 |
+| 快速原型验证 | Prompt Tuning | 训练最快 |
+
+---
+
+## 7. 核心要点总结
+
+```
+LoRA = 低秩矩阵近似权重更新
+
+┌─────────────────────────────────────────────────────────────┐
+│  核心公式                                                   │
+│  h = W₀ × x + (α/r) × A × B × x                            │
+│  └── 冻结     └── 可训练低秩矩阵                             │
+├─────────────────────────────────────────────────────────────┤
+│  为什么有效？                                               │
+│  - 预训练权重是满秩的                                       │
+│  - 但微调更新 ΔW 是低秩的                                   │
+│  - 用 A×B (r×(d+k)) 近似 ΔW (d×k)，参数量减少 100-1000 倍   │
+├─────────────────────────────────────────────────────────────┤
+│  关键超参数                                                 │
+│  - r (秩)：8-64，任务越复杂越大                             │
+│  - α (缩放)：通常 2r                                        │
+│  - target_modules：通常 Q,V 或 Q,K,V,O                      │
+│  - dropout：0.0-0.1，防止过拟合                             │
+├─────────────────────────────────────────────────────────────┤
+│  进阶变体                                                   │
+│  - QLoRA：4-bit 量化 + LoRA，单卡训大模型                   │
+│  - DoRA：分解幅度和方向，更稳定                             │
+│  - AdaLoRA：自适应调整各层秩                                │
+├─────────────────────────────────────────────────────────────┤
+│  优势                                                       │
+│  ✓ 显存需求降低 10-100 倍                                   │
+│  ✓ 训练速度更快                                             │
+│  ✓ 存储多个任务适配器成本低                                 │
+│  ✓ 推理时可合并，无额外开销                                 │
+│  ✓ 不损失预训练知识（减少灾难性遗忘）                       │
+├─────────────────────────────────────────────────────────────┤
+│  局限                                                       │
+│  ✗ 某些复杂任务效果略低于全量微调                           │
+│  ✗ 需要调参（r 的选择）                                     │
+│  ✗ 不适合需要大幅改变模型行为的任务                         │
+└─────────────────────────────────────────────────────────────┘
+
+使用建议：
+• 从 r=16, α=32, target=["q_proj","v_proj"] 开始
+• 欠拟合 → 增加 r 或扩展 target_modules
+• 过拟合 → 减少 r 或增加 dropout
+• 大模型 (13B+) 优先使用 QLoRA
+```
+
+---
+
+## 8. 延伸阅读
+
+- **论文**：
+  - [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) (ICLR 2022) - LoRA 原论文
+  - [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314) (2023) - QLoRA 论文
+  - [DoRA: Weight-Decomposed Low-Rank Adaptation](https://arxiv.org/abs/2402.09353) (2024) - DoRA
+  - [AdaLoRA: Adaptive Budget Allocation for Parameter-Efficient Fine-Tuning](https://arxiv.org/abs/2303.10512) (ICLR 2023)
+
+- **代码与工具**：
+  - [huggingface/peft](https://github.com/huggingface/peft) - 官方 LoRA 实现
+  - [mlabonne/llm-course](https://github.com/mlabonne/llm-course) - LoRA 实践教程
+  - [OpenAccess-AI-Collective/axolotl](https://github.com/OpenAccess-AI-Collective/axolotl) - 训练框架
+
+- **博客与教程**：
+  - [Hugging Face PEFT 文档](https://huggingface.co/docs/peft/index)
+  - [Philschmid blog on LoRA](https://www.philschmid.de/fine-tune-flan-t5-peft)
+  - [Sebastian Raschka 的 LoRA 解析](https://magazine.sebastianraschka.com/p/lora-and-dora)
+
+- **上一章**：[22-缩放定律与计算最优](22-缩放定律与计算最优.md)
+- **下一章**：[24-RLHF：从GPT到ChatGPT](24-RLHF：从GPT到ChatGPT.md)
