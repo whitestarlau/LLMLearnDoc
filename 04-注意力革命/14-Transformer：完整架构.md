@@ -1,38 +1,21 @@
 # 14-Transformer：完整架构
 
-## 一句话理解
+前面三章我们逐一攻克了 Transformer 的核心组件：
+- **多头注意力**：同时从多个角度捕捉关系
+- **位置编码**：让模型知道顺序
+- **残差连接 & LayerNorm**：让深层网络稳定训练
 
-**把前面学的所有组件——多头注意力、位置编码、残差连接、层归一化——组装成一台完整的机器。**
+现在，是时候把这些零件组装成一台完整的机器了。
 
----
+2017年，Google 的论文 "Attention Is All You Need" 提出了 Transformer 架构。它彻底改变了 NLP 领域，成为 GPT、BERT、LLaMA 等所有现代大模型的**地基**。
 
-## 1. 直觉解释
-
-### 变形金刚？不是
-
-Transformer 不是机器人，而是一种**序列建模架构**。
-
-名字的含义：它能把一种序列"变换"成另一种序列：
-- 中文 → 英文
-- 问题 → 答案
-- 文本摘要 → 原文
-
-### 为什么 Transformer 如此重要？
-
-它是现代大模型的**地基**：
-- GPT 系列
-- BERT
-- LLaMA
-- Claude
-- ...
-
-几乎所有现代语言模型都基于 Transformer。
+这一章，我们将看到所有这些组件如何协同工作，构成一个强大的序列到序列的"翻译机"。
 
 ---
 
-## 2. 整体架构
+## 1. 整体架构
 
-### 2.1 编码器-解码器结构
+### 1.1 编码器-解码器结构
 
 原始 Transformer 用于机器翻译，采用编码器-解码器设计：
 
@@ -44,7 +27,7 @@ Transformer 不是机器人，而是一种**序列建模架构**。
 - **编码器**：听懂问题（理解输入）
 - **解码器**：给出回答（生成输出）
 
-### 2.2 完整架构图
+### 1.2 完整架构图
 
 ```
 Encoder (×N 层)                    Decoder (×N 层)
@@ -80,9 +63,9 @@ Encoder (×N 层)                    Decoder (×N 层)
 
 ---
 
-## 3. 核心组件详解
+## 2. 核心组件详解
 
-### 3.1 输入嵌入 + 位置编码
+### 2.1 输入嵌入 + 位置编码
 
 ```python
 class EmbeddingWithPosition(nn.Module):
@@ -108,7 +91,7 @@ class EmbeddingWithPosition(nn.Module):
         return embed + self.position_encoding[:, :seq_len]
 ```
 
-### 3.2 残差连接（Add）
+### 2.2 残差连接（Add）
 
 **问题**：网络越深，梯度越难传递。
 
@@ -122,7 +105,7 @@ output = x + sublayer(x)  # 残差连接
 - 如果 sublayer 没用，网络可以学成 x + 0 = x
 - 不会因为加深而变差
 
-### 3.3 层归一化（LayerNorm）
+### 2.3 层归一化（LayerNorm）
 
 **为什么不用 BatchNorm？**
 
@@ -152,7 +135,7 @@ class LayerNorm(nn.Module):
         return self.gamma * (x - mean) / (std + self.eps) + self.beta
 ```
 
-### 3.4 前馈网络（FFN）
+### 2.4 前馈网络（FFN）
 
 两层全连接 + 激活函数：
 
@@ -176,7 +159,7 @@ class FeedForward(nn.Module):
 - d_model = 512 → d_ff = 2048
 - d_model = 768 → d_ff = 3072
 
-### 3.5 Add & Norm 组合
+### 2.5 Add & Norm 组合
 
 ```python
 class SublayerConnection(nn.Module):
@@ -191,7 +174,7 @@ class SublayerConnection(nn.Module):
 
 ---
 
-## 4. 编码器层
+## 3. 编码器层
 
 ```python
 class EncoderLayer(nn.Module):
@@ -217,7 +200,7 @@ class EncoderLayer(nn.Module):
 
 ---
 
-## 5. 解码器层
+## 4. 解码器层
 
 解码器多了一个**交叉注意力**：
 
@@ -251,9 +234,9 @@ class DecoderLayer(nn.Module):
 
 ---
 
-## 6. 掩码机制
+## 5. 掩码机制
 
-### 6.1 填充掩码（Padding Mask）
+### 5.1 填充掩码（Padding Mask）
 
 忽略填充位置：
 
@@ -263,7 +246,7 @@ def create_padding_mask(seq, pad_token=0):
     # [batch, 1, 1, seq_len]
 ```
 
-### 6.2 因果掩码（Causal Mask）
+### 5.2 因果掩码（Causal Mask）
 
 解码器不能"偷看"未来：
 
@@ -351,7 +334,7 @@ def create_causal_mask(seq_len):
 
 ---
 
-## 7. 完整 Transformer
+## 6. 完整 Transformer
 
 ```python
 class Transformer(nn.Module):
@@ -396,9 +379,9 @@ class Transformer(nn.Module):
 
 ---
 
-## 8. Transformer 变体
+## 7. Transformer 变体
 
-### 8.1 Encoder-Only（BERT 风格）
+### 7.1 Encoder-Only（BERT 风格）
 
 只用编码器，适合**理解任务**：
 - 文本分类
@@ -423,7 +406,7 @@ class BERTStyleEncoder(nn.Module):
         return self.norm(x)
 ```
 
-### 8.2 Decoder-Only（GPT 风格）
+### 7.2 Decoder-Only（GPT 风格）
 
 只用解码器，适合**生成任务**：
 - 文本生成
@@ -468,7 +451,7 @@ class GPTStyleDecoder(nn.Module):
         return self.output_proj(self.norm(x))
 ```
 
-### 8.3 对比
+### 7.3 对比
 
 | 架构 | 代表模型 | 特点 | 典型应用 |
 |------|----------|------|----------|
@@ -478,9 +461,9 @@ class GPTStyleDecoder(nn.Module):
 
 ---
 
-## 9. 训练与推理
+## 8. 训练与推理
 
-### 9.1 训练：Teacher Forcing
+### 8.1 训练：Teacher Forcing
 
 ```python
 # 输入：<s> I love you
@@ -490,7 +473,7 @@ logits = model(src, tgt_input)  # tgt_input 是目标左移
 loss = F.cross_entropy(logits.view(-1, vocab_size), tgt_output.view(-1))
 ```
 
-### 9.2 推理：自回归生成
+### 8.2 推理：自回归生成
 
 ```python
 def generate(model, src, max_len=100):
@@ -514,7 +497,7 @@ def generate(model, src, max_len=100):
 
 ---
 
-## 10. 典型超参数
+## 9. 典型超参数
 
 ### Transformer Base
 
@@ -527,7 +510,7 @@ def generate(model, src, max_len=100):
 | dropout | 0.1 |
 | 参数量 | ~65M |
 
-### Transformer Big
+### 9.2 Transformer Big
 
 | 参数 | 值 |
 |------|-----|
@@ -540,9 +523,9 @@ def generate(model, src, max_len=100):
 
 ---
 
-## 11. 常见问题
+## 10. 常见问题
 
-### Q1: Pre-Norm vs Post-Norm？
+### 10.1 Pre-Norm vs Post-Norm？
 
 原始 Transformer 用 **Post-Norm**：
 ```python
@@ -556,14 +539,14 @@ x = x + sublayer(norm(x))
 
 Pre-Norm 训练更稳定，梯度流更顺畅。
 
-### Q2: 为什么用 ReLU 而不是 GELU？
+### 10.2 为什么用 ReLU 而不是 GELU？
 
 原始论文用 ReLU，但现代模型多用 GELU：
 - GELU 在零点更平滑
 - 训练更稳定
 - BERT、GPT 都用 GELU
 
-### Q3: 参数量怎么算？
+### 10.3 参数量怎么算？
 
 ```
 词嵌入: vocab_size × d_model
@@ -577,7 +560,7 @@ Pre-Norm 训练更稳定，梯度流更顺畅。
 总计 ≈ num_layers × (4d² + 2d×d_ff) + vocab×d
 ```
 
-### Q4: Transformer 能处理多长的序列？
+### 10.4 Transformer 能处理多长的序列？
 
 理论无限，但实际受限于：
 - 显存：O(n²) 的注意力矩阵
@@ -587,7 +570,7 @@ Pre-Norm 训练更稳定，梯度流更顺畅。
 
 ---
 
-## 12. 核心要点总结
+## 11. 核心要点总结
 
 ```
 Transformer = 注意力 + 残差 + LayerNorm + FFN
@@ -609,7 +592,7 @@ Transformer = 注意力 + 残差 + LayerNorm + FFN
 
 ---
 
-## 13. 延伸阅读
+## 12. 延伸阅读
 
 - **论文**：[Attention Is All You Need](https://arxiv.org/abs/1706.03762)
 - **图解**：[The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)
