@@ -1,4 +1,4 @@
-# 14-Transformer：完整架构
+# 05-04 Transformer：完整架构
 
 前面三章我们逐一攻克了 Transformer 的核心组件：
 - **多头注意力**：同时从多个角度捕捉关系
@@ -598,4 +598,4 @@ Transformer = 注意力 + 残差 + LayerNorm + FFN
 - **图解**：[The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)
 - **代码**：[The Annotated Transformer](https://nlp.seas.harvard.edu/annotated-transformer/)
 - **上一章**：[13-位置编码：让模型知道顺序](13-位置编码：让模型知道顺序.md)
-- **下一章**：[15-语言模型](../05-语言模型/15-语言模型.md)
+- **下一章**：[15-语言模型](../06-语言模型/06-01-语言模型.md)

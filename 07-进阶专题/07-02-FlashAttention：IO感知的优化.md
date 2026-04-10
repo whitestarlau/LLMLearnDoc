@@ -1,4 +1,4 @@
-# 23-FlashAttention：IO感知的优化
+# 07-02 FlashAttention：IO感知的优化
 
 在上一章中，我们学习了如何通过采样策略控制生成文本的质量——从贪心解码到温度采样，再到 Top-p 采样，这些技术让我们能在确定性和创造性之间找到平衡。
 
@@ -751,5 +751,5 @@ FlashAttention = 分块 + 在线 Softmax + 减少 HBM 访问
   - [Tri Dao's Blog on FlashAttention](https://princeton-nlp.github.io/flash-attention/)
   - [The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)（注意力基础）
 
-- **上一章**：[22-采样策略与生成质量](22-采样策略与生成质量.md)
-- **下一章**：[24-缩放定律与计算最优](24-缩放定律与计算最优.md)
+- **上一章**：[采样策略与生成质量](07-01-采样策略与生成质量.md)
+- **下一章**：[缩放定律与计算最优](07-03-缩放定律与计算最优.md)
